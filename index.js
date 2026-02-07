@@ -26,7 +26,7 @@ app.post("/render", (req, res) => {
         return res.status(400).json({ error: "Missing video_url or template_image_url" });
     }
 
-    // Immediately respond so client / Make doesn’t timeout
+    // Immediately respond to avoid client timeout
     res.json({ success: true, status: "accepted" });
 
     (async () => {
@@ -55,19 +55,15 @@ app.post("/render", (req, res) => {
 
             ffmpeg(videoPath)
                 .input(imgPath)
-                // Example: overlay template image on video, scale to match template
-                .complexFilter([
-                    "[0:v][1:v] overlay=0:0"
-                ])
-                .outputOptions("-preset veryfast") // speed up processing
+                // Overlay template on video (example: top-left corner)
+                .complexFilter(["[0:v][1:v] overlay=0:0"])
+                .outputOptions("-preset veryfast")
                 .on("progress", p => console.log("FFmpeg progress:", p))
                 .on("end", () => {
                     console.log("FFmpeg finished:", outputPath);
                     console.log("Output video URL:", `https://video-webhook.onrender.com/output/${path.basename(outputPath)}`);
                 })
-                .on("error", err => {
-                    console.error("FFmpeg error:", err);
-                })
+                .on("error", err => console.error("FFmpeg error:", err))
                 .save(outputPath);
 
         } catch (err) {
@@ -78,6 +74,4 @@ app.post("/render", (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
