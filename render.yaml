@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: video-webhook
+    env: node
+    plan: free
+    buildCommand: |
+      apt-get update
+      apt-get install -y ffmpeg
+      npm install
+    startCommand: npm start
