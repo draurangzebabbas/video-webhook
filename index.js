@@ -1,118 +1,83 @@
-const express = require("express");
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
-const ffmpeg = require("fluent-ffmpeg");
-const { v4: uuid } = require("uuid");
+import express from "express";
+import ffmpeg from "fluent-ffmpeg";
+import fetch from "node-fetch";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
 
-const TMP_DIR = path.join(__dirname, "tmp");
-if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
+// Serve public folder for output videos
+app.use("/output", express.static(path.join(__dirname, "public")));
 
-app.post("/render", async (req, res) => {
-    const { video_url, template_image_url, text } = req.body;
+// Ensure public folder exists
+const publicDir = path.join(__dirname, "public");
+if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
+
+// POST /render endpoint
+app.post("/render", (req, res) => {
+    const { video_url, template_image_url } = req.body;
 
     if (!video_url || !template_image_url) {
-        return res.status(400).json({
-            error: "video_url and template_image_url are required"
-        });
+        return res.status(400).json({ error: "Missing video_url or template_image_url" });
     }
 
-    const jobId = uuid();
-    const videoPath = path.join(TMP_DIR, `${jobId}-input.mp4`);
-    const imagePath = path.join(TMP_DIR, `${jobId}-bg.png`);
-    const outputPath = path.join(TMP_DIR, `${jobId}-output.mp4`);
+    // Immediately respond so client / Make doesn’t timeout
+    res.json({ success: true, status: "accepted" });
 
-    try {
-        // Download video
-        const videoStream = await axios.get(video_url, { responseType: "stream" });
-        await streamToFile(videoStream.data, videoPath);
+    (async () => {
+        try {
+            console.log("Starting video processing...");
 
-        // Download image
-        const imageStream = await axios.get(template_image_url, { responseType: "stream" });
-        await streamToFile(imageStream.data, imagePath);
+            // Download video
+            const videoResp = await fetch(video_url);
+            const videoBuffer = await videoResp.arrayBuffer();
+            const videoPath = path.join(publicDir, "input.mp4");
+            fs.writeFileSync(videoPath, Buffer.from(videoBuffer));
+            console.log("Video downloaded:", videoPath);
 
-        // FFmpeg processing
-        await new Promise((resolve, reject) => {
-            ffmpeg()
-                .input(videoPath)
-                .input(imagePath)
+            // Download template image
+            const imgResp = await fetch(template_image_url);
+            const imgBuffer = await imgResp.arrayBuffer();
+            const imgPath = path.join(publicDir, "template.png");
+            fs.writeFileSync(imgPath, Buffer.from(imgBuffer));
+            console.log("Template image downloaded:", imgPath);
+
+            // Output video path
+            const timestamp = Date.now();
+            const outputPath = path.join(publicDir, `output-${timestamp}.mp4`);
+
+            console.log("Starting FFmpeg processing...");
+
+            ffmpeg(videoPath)
+                .input(imgPath)
+                // Example: overlay template image on video, scale to match template
                 .complexFilter([
-                    {
-                        filter: "scale",
-                        options: {
-                            w: 900,
-                            h: 1600,
-                            force_original_aspect_ratio: "decrease"
-                        }
-                    },
-                    {
-                        filter: "pad",
-                        options: {
-                            w: 900,
-                            h: 1600,
-                            x: "(ow-iw)/2",
-                            y: "(oh-ih)/2",
-                            color: "black"
-                        }
-                    },
-                    {
-                        filter: "eq",
-                        options: {
-                            contrast: 1.15,
-                            saturation: 1.25
-                        }
-                    }
+                    "[0:v][1:v] overlay=0:0"
                 ])
-                .complexFilter([
-                    {
-                        filter: "overlay",
-                        options: {
-                            x: "(W-w)/2",
-                            y: "(H-h)/2"
-                        }
-                    }
-                ])
-                .videoCodec("libx264")
-                .audioCodec("aac")
-                .outputOptions("-movflags faststart")
-                .on("end", resolve)
-                .on("error", reject)
+                .outputOptions("-preset veryfast") // speed up processing
+                .on("progress", p => console.log("FFmpeg progress:", p))
+                .on("end", () => {
+                    console.log("FFmpeg finished:", outputPath);
+                    console.log("Output video URL:", `https://video-webhook.onrender.com/output/${path.basename(outputPath)}`);
+                })
+                .on("error", err => {
+                    console.error("FFmpeg error:", err);
+                })
                 .save(outputPath);
-        });
 
-        const outputUrl = `${req.protocol}://${req.get("host")}/output/${path.basename(outputPath)}`;
-
-        res.json({
-            success: true,
-            output_url: outputUrl
-        });
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Processing failed" });
-    }
+        } catch (err) {
+            console.error("Processing failed:", err);
+        }
+    })();
 });
 
-// Serve output files
-app.use("/output", express.static(TMP_DIR));
-
-app.get("/", (req, res) => {
-    res.send("Video Webhook API is running");
-});
-
-const PORT = process.env.PORT || 3000;
+// Start server
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
-
-function streamToFile(stream, filePath) {
-    return new Promise((resolve, reject) => {
-        const write = fs.createWriteStream(filePath);
-        stream.pipe(write);
-        write.on("finish", resolve);
-        write.on("error", reject);
-    });
-}
